@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# Trade bot settings. Anything left out falls back to tradebot/config.py.
+# ---------------------------------------------------------------------------
+
+# dry_run = learn and log signals from live prices but never place orders.
+# trade   = place orders on whatever MT5 account is logged in.
+mode: dry_run
+# Safety catch: in trade mode the bot refuses a REAL-money account unless this is true.
+allow_real_money: false
+
+mt5:
+  login: null          # e.g. 12345678 (null = use the account already logged in to the terminal)
+  password: null       # better: set the MT5_PASSWORD environment variable
+  server: null         # e.g. "MetaQuotes-Demo"
+  path: null           # path to terminal64.exe if MT5 isn't found automatically
+  magic: 20261020      # tags the bot's orders so it never touches your manual trades
+
+symbols: [EURUSD]
+timeframe: M15         # M1 M5 M15 M30 H1 H4 D1
+history_bars: 20000
+
+# Starting strategy. `python -m tradebot evolve` searches around these values and saves
+# better versions to state/genome_<SYMBOL>.json (that file then takes precedence).
+strategy:
+  entry_threshold: 0.58   # trade only when the model is at least this sure (buy >= 0.58, sell <= 0.42)
+  sl_atr_mult: 1.5        # stop loss = 1.5 x ATR
+  tp_atr_mult: 2.0        # take profit = 2.0 x ATR
+  label_atr_mult: 1.5     # what the model learns: "does price move 1.5 ATR up before 1.5 ATR down?"
+  horizon: 16             # ...within this many bars
+  max_hold_bars: 32       # close a trade after this many bars regardless
+  feature_groups: [momentum, volatility, trend, oscillators, time, volume, candles, custom]
+  gbm_max_depth: 4
+  gbm_learning_rate: 0.05
+  recency_half_life: 3000 # bars; newer data counts more so the model follows the current market
+
+learning:
+  initial_train_bars: 4000
+  train_window_bars: 6000   # the model remembers this many recent bars
+  retrain_every_bars: 500   # scheduled retrain; it also retrains early when accuracy drops
+  drift_threshold: 0.48     # recent accuracy below this = market changed -> retrain now
+  validation_bars: 800      # new model must beat the old one on these recent bars to replace it
+
+risk:
+  risk_per_trade_pct: 0.5   # % of equity lost if the stop is hit
+  max_daily_loss_pct: 3.0   # no new trades for the rest of the day after this
+  max_open_positions: 1     # per symbol
+  max_spread_points: 30
+  allowed_hours: null       # e.g. [7,8,9,10,11,12,13,14,15,16] (broker server time)
+  allowed_weekdays: [0, 1, 2, 3, 4]   # Mon..Fri
+  blackout:                 # no new trades in these windows (news, holidays, ...)
+    # - {start: "2026-11-06 13:00", end: "2026-11-06 14:30", note: "US jobs report"}
+
+user:
+  bias: {}                  # e.g. {EURUSD: long_only}  (both | long_only | short_only | off)
+  hint_weight: 5.0          # how much more a hint counts than a normal bar
+
+backtest:
+  initial_equity: 10000
+  spread: 0.00012           # in price units (1.2 pips on EURUSD)
+  slippage: 0.00002
+
+evolution:
+  population: 12
+  generations: 6
+  holdout_frac: 0.25        # newest 25% of data is kept hidden to test the evolved settings
+  min_trades: 30
