@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------
+# Email outreach settings - edit these before sending
+# ---------------------------------------------------------------
+
+sender:
+  name: "Your Name"                 # shown as the "From" name
+  email: "you@gmail.com"            # your Gmail address
+  business_name: "Your Business Pte. Ltd."
+  business_address: "123 Example Road, #01-01, Singapore 123456"
+  phone: "+65 0000 0000"            # optional, leave "" to hide
+
+# Subject line. Placeholders like {company_name} work here too.
+subject: "Helping {company_name} with ..."
+
+# Singapore Spam Control Act: unsolicited commercial emails sent in bulk
+# (e.g. more than 1,000 within 30 days) must start the subject with "<ADV>".
+# At 50-100/day you can pass that threshold, so this is ON by default.
+adv_label: true
+
+# File paths (relative to this folder)
+contacts_file: "contacts.xlsx"      # your Excel file
+template_file: "template.txt"       # your email body
+
+# Sending pace - keeps Gmail happy and you out of spam folders
+daily_limit: 80                     # max emails per day (Gmail hard cap is ~500)
+delay_seconds_min: 45               # random wait between emails
+delay_seconds_max: 120

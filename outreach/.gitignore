@@ -1,0 +1,5 @@
+# Your private data - never commit these
+contacts.xlsx
+sent_log.csv
+unsubscribed.txt
+.env

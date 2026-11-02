@@ -1,0 +1,9 @@
+Hi {company_name} team,
+
+[Replace this paragraph with your email. You can use any column from your
+Excel file as a placeholder by writing its name in curly brackets, e.g.
+{{company_name}} or {{industry}}. Column "Company Name" becomes {{company_name}}.]
+
+Best regards,
+{sender_name}
+{sender_business}
