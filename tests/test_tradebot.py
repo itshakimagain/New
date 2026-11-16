@@ -172,3 +172,49 @@ def test_live_bot_refuses_real_account(cfg, prices):
     cfg["mode"] = "trade"
     with pytest.raises(BrokerError):
         LiveBot(cfg, FakeBroker(prices, real=True), log=lambda *_: None).run(once=True)
+
+
+class FakeMT5:
+    TIMEFRAME_M15 = 15
+
+    def __init__(self, names, max_bars):
+        self.names, self.max_bars, self.requests = names, max_bars, []
+
+    def symbol_select(self, symbol, enable):
+        return symbol in self.names
+
+    def symbols_get(self, pattern):
+        return [SimpleNamespace(name=n) for n in self.names if pattern.strip("*").lower() in n.lower()]
+
+    def copy_rates_from_pos(self, symbol, timeframe, start, count):
+        self.requests.append(count)
+        if count > self.max_bars:
+            return None
+        return np.array([(1700000000 + 900 * i, 1.0, 1.1, 0.9, 1.05, 100) for i in range(count)],
+                        dtype=[("time", "i8"), ("open", "f8"), ("high", "f8"), ("low", "f8"),
+                               ("close", "f8"), ("tick_volume", "f8")])
+
+    def last_error(self):
+        return (-1, "Terminal: Call failed")
+
+
+def _broker(monkeypatch, fake):
+    import sys
+    from tradebot import broker as broker_mod
+    monkeypatch.setitem(sys.modules, "MetaTrader5", fake)
+    monkeypatch.setattr(broker_mod.time, "sleep", lambda s: None)
+    return broker_mod.MT5Broker(copy.deepcopy(DEFAULTS))
+
+
+def test_closed_bars_suggests_case_sensitive_names(monkeypatch):
+    from tradebot.broker import BrokerError
+    broker = _broker(monkeypatch, FakeMT5(["EURUSD.m", "EURUSD.ecn"], 20000))
+    with pytest.raises(BrokerError, match="EURUSD.m, EURUSD.ecn"):
+        broker.closed_bars("EURUSD.M", "M15", 100)
+    assert len(broker.closed_bars("EURUSD.m", "M15", 100)) == 100
+
+
+def test_closed_bars_falls_back_to_fewer_bars(monkeypatch):
+    fake = FakeMT5(["EURUSD"], 6000)
+    df = _broker(monkeypatch, fake).closed_bars("EURUSD", "M15", 20000)
+    assert len(df) == 5000 and fake.requests[-1] == 5000

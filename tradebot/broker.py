@@ -1,4 +1,6 @@
 """Thin wrapper around the official MetaTrader5 Python package (Windows, with the MT5 terminal installed)."""
+import time
+
 from .data import rates_to_frame
 from .risk import compute_lots
 
@@ -49,11 +51,24 @@ class MT5Broker:
 
     def closed_bars(self, symbol, timeframe, count):
         """The last `count` fully closed bars (position 0 is the still-forming bar, so start at 1)."""
-        self.mt5.symbol_select(symbol, True)
-        rates = self.mt5.copy_rates_from_pos(symbol, self.timeframe(timeframe), 1, count)
-        if rates is None or len(rates) == 0:
-            raise BrokerError(f"No bars for {symbol}: {self.mt5.last_error()}")
-        return rates_to_frame(rates)
+        if not self.mt5.symbol_select(symbol, True):
+            base = symbol.split(".")[0][:6]
+            similar = [s.name for s in self.mt5.symbols_get(f"*{base}*") or []][:10]
+            hint = f" Similar names at your broker: {', '.join(similar)}" if similar else ""
+            raise BrokerError(f"Symbol '{symbol}' not found (names are case-sensitive).{hint}")
+        # The terminal may still be downloading history, or cap how many bars it keeps
+        # (Tools > Options > Charts > Max bars in chart), so retry with fewer bars.
+        while True:
+            rates = None
+            for _ in range(3):
+                rates = self.mt5.copy_rates_from_pos(symbol, self.timeframe(timeframe), 1, count)
+                if rates is not None and len(rates):
+                    return rates_to_frame(rates)
+                time.sleep(2)
+            if count <= 1000:
+                raise BrokerError(f"No bars for {symbol}: {self.mt5.last_error()}. Open a {symbol} chart "
+                                  f"in MT5 so it downloads history, then try again.")
+            count //= 2
 
     def spread_points(self, symbol):
         tick, info = self.mt5.symbol_info_tick(symbol), self.mt5.symbol_info(symbol)

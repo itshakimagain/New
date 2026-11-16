@@ -157,7 +157,7 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
-    args.symbol = (args.symbol or cfg["symbols"][0]).upper()
+    args.symbol = args.symbol or cfg["symbols"][0]  # MT5 symbol names are case-sensitive
     args.fn(cfg, args)
 
 
