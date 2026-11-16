@@ -218,3 +218,35 @@ def test_closed_bars_falls_back_to_fewer_bars(monkeypatch):
     fake = FakeMT5(["EURUSD"], 6000)
     df = _broker(monkeypatch, fake).closed_bars("EURUSD", "M15", 20000)
     assert len(df) == 5000 and fake.requests[-1] == 5000
+
+
+def test_live_bot_survives_lost_connection(cfg, prices):
+    class FlakyBroker(FakeBroker):
+        def __init__(self, df):
+            super().__init__(df)
+            self.failures = 0
+
+        def server_time(self, symbol):
+            if self.failures:
+                self.failures -= 1
+                raise AttributeError("'NoneType' object has no attribute 'time'")
+            return super().server_time(symbol)
+
+    broker = FlakyBroker(prices)
+    logs = []
+    bot = LiveBot(cfg, broker, log=logs.append)
+    bot.run(once=True)
+    broker.failures, broker.cursor = 1, broker.cursor + 1
+    bot.run(once=True)
+    assert any("will retry" in line for line in logs)
+    assert any(line.startswith("reconnected") for line in logs)
+
+
+def test_reconnect_to_real_account_stops_trading(cfg, prices):
+    from tradebot.broker import BrokerError
+    cfg["mode"] = "trade"
+    broker = FakeBroker(prices)
+    bot = LiveBot(cfg, broker, log=lambda *_: None)
+    broker.real = True
+    with pytest.raises(BrokerError):
+        bot._reconnect()

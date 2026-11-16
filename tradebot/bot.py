@@ -81,16 +81,32 @@ class LiveBot:
         try:
             self._check_account()
             while True:
+                failed = False
                 for symbol in self.cfg["symbols"]:
                     try:
                         self.step(symbol)
                     except BrokerError as exc:
                         self.log(f"{symbol}: {exc}")
+                    except Exception as exc:  # e.g. MT5 returns None after losing its connection
+                        failed = True
+                        self.log(f"{symbol}: error {exc!r} - will retry")
+                if failed:
+                    self._reconnect()
                 if once:
                     return
                 time.sleep(self.cfg["poll_seconds"])
         finally:
             self.broker.shutdown()
+
+    def _reconnect(self):
+        try:
+            self.broker.shutdown()
+            info = self.broker.connect()
+        except BrokerError as exc:
+            self.log(f"reconnect failed ({exc}) - retrying in {self.cfg['poll_seconds']}s")
+            return
+        self.log(f"reconnected: account {info.login}, equity {info.equity}")
+        self._check_account()  # the terminal may now be logged in to a different account
 
     def step(self, symbol):
         cfg, tf = self.cfg, self.cfg["timeframe"]
