@@ -288,3 +288,14 @@ def test_dry_run_tracks_paper_trades(cfg, prices, capsys):
     assert len(closed) > 0 and set(closed["reason"]) <= {"tp", "sl", "gap_sl", "max_hold"}
     _print_paper_summary(cfg, "EURUSD", len(bot.symbols["EURUSD"]["paper_open"]))
     assert f"{len(closed)} closed" in capsys.readouterr().out
+
+
+def test_saved_model_only_resumed_for_same_timeframe(cfg, prices):
+    logs = []
+    bot = LiveBot(cfg, FakeBroker(prices), log=logs.append)
+    bot.step("EURUSD")
+    LiveBot(cfg, FakeBroker(prices), log=logs.append).step("EURUSD")
+    assert any("resumed model" in line for line in logs)
+    cfg["timeframe"] = "H1"
+    LiveBot(cfg, FakeBroker(prices), log=logs.append).step("EURUSD")
+    assert any("retraining for H1" in line for line in logs)

@@ -60,10 +60,14 @@ class LiveBot:
         path = self.models_dir / f"{symbol}.joblib"
         if path.exists():
             saved = joblib.load(path)
-            if saved["genome_version"] == genome.get("version", 0):
+            if saved.get("timeframe") != self.cfg["timeframe"]:
+                self.log(f"{symbol}: saved model is for timeframe {saved.get('timeframe', 'unknown')}, "
+                         f"retraining for {self.cfg['timeframe']}")
+            elif saved["genome_version"] != genome.get("version", 0):
+                self.log(f"{symbol}: genome changed to v{genome.get('version', 0)}, retraining")
+            else:
                 self.log(f"{symbol}: resumed model v{saved['learner'].version}")
                 return {"paper_open": []} | saved | {"genome": genome}
-            self.log(f"{symbol}: genome changed to v{genome.get('version', 0)}, retraining")
         _, X, y, w = self._dataset(symbol, df, genome)
         learner = Learner(self.cfg["learning"], genome, X.columns).fit(X, y, w)
         known = y.dropna()
@@ -73,8 +77,8 @@ class LiveBot:
 
     def _save(self, symbol):
         state = self.symbols[symbol]
-        joblib.dump({k: state[k] for k in ("learner", "genome_version", "last_observed", "last_bar", "paper_open")},
-                    self.models_dir / f"{symbol}.joblib")
+        saved = {k: state[k] for k in ("learner", "genome_version", "last_observed", "last_bar", "paper_open")}
+        joblib.dump(saved | {"timeframe": self.cfg["timeframe"]}, self.models_dir / f"{symbol}.joblib")
 
     def _check_account(self):
         if self.cfg["mode"] == "trade" and self.broker.is_real_account() and not self.cfg["allow_real_money"]:
