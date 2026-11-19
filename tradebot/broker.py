@@ -83,6 +83,11 @@ class MT5Broker:
         return compute_lots(risk_money, sl_distance, info.trade_tick_size, info.trade_tick_value,
                             info.volume_min, info.volume_max, info.volume_step)
 
+    def value_per_price_unit(self, symbol):
+        """Account-currency value of a 1.0 price move for 1 lot."""
+        info = self.mt5.symbol_info(symbol)
+        return info.trade_tick_value / info.trade_tick_size
+
     def _filling(self, info):
         if info.filling_mode & 1:
             return self.mt5.ORDER_FILLING_FOK

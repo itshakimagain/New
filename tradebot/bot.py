@@ -8,6 +8,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 
+from .backtest import check_exit
 from .broker import BAR_SECONDS, BrokerError, MT5Broker
 from .config import load_genome, state_dir
 from .features import build_features, load_hints, load_hook, make_dataset
@@ -16,16 +17,18 @@ from .risk import TradeGate, signal_direction
 
 JOURNAL_FIELDS = ["logged_at", "bar_time", "symbol", "action", "direction", "prob", "volume",
                   "sl_distance", "tp_distance", "model_version", "genome_version", "note"]
+PAPER_FIELDS = ["logged_at", "symbol", "signal_bar", "direction", "prob", "volume", "entry_time", "entry",
+                "exit_time", "exit", "reason", "r", "pnl"]
 
 
 class Journal:
-    def __init__(self, path):
-        self.path = Path(path)
+    def __init__(self, path, fields=JOURNAL_FIELDS):
+        self.path, self.fields = Path(path), fields
 
     def write(self, **row):
         new = not self.path.exists()
         with open(self.path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=JOURNAL_FIELDS)
+            writer = csv.DictWriter(f, fieldnames=self.fields)
             if new:
                 writer.writeheader()
             writer.writerow({"logged_at": dt.datetime.now().isoformat(timespec="seconds"), **row})
@@ -38,6 +41,9 @@ class LiveBot:
         self.gate = TradeGate(cfg)
         self.custom_features = load_hook(cfg["paths"]["custom_features"], "add_features")
         self.journal = Journal(state_dir(cfg) / "journal.csv")
+        # In dry_run, every signal becomes a pretend trade that is followed bar by bar with the
+        # backtest's exit rules, so results can be judged without placing orders.
+        self.paper_log = Journal(state_dir(cfg) / "paper_trades.csv", PAPER_FIELDS)
         self.models_dir = state_dir(cfg) / "models"
         self.models_dir.mkdir(exist_ok=True)
         self.symbols = {}
@@ -56,18 +62,18 @@ class LiveBot:
             saved = joblib.load(path)
             if saved["genome_version"] == genome.get("version", 0):
                 self.log(f"{symbol}: resumed model v{saved['learner'].version}")
-                return saved | {"genome": genome}
+                return {"paper_open": []} | saved | {"genome": genome}
             self.log(f"{symbol}: genome changed to v{genome.get('version', 0)}, retraining")
         _, X, y, w = self._dataset(symbol, df, genome)
         learner = Learner(self.cfg["learning"], genome, X.columns).fit(X, y, w)
         known = y.dropna()
         self.log(f"{symbol}: trained model v{learner.version} on {len(known)} labelled bars")
         return {"learner": learner, "genome": genome, "genome_version": genome.get("version", 0),
-                "last_observed": known.index[-1] if len(known) else None, "last_bar": None}
+                "last_observed": known.index[-1] if len(known) else None, "last_bar": None, "paper_open": []}
 
     def _save(self, symbol):
         state = self.symbols[symbol]
-        joblib.dump({k: state[k] for k in ("learner", "genome_version", "last_observed", "last_bar")},
+        joblib.dump({k: state[k] for k in ("learner", "genome_version", "last_observed", "last_bar", "paper_open")},
                     self.models_dir / f"{symbol}.joblib")
 
     def _check_account(self):
@@ -130,7 +136,10 @@ class LiveBot:
             for event in learner.events[n_events:]:
                 self.log(f"{symbol}: retrain ({event['reason']}) promoted={event['promoted']} -> model v{event['version']}")
 
-        self._manage_open_positions(symbol, genome)
+        if cfg["mode"] == "trade":
+            self._manage_open_positions(symbol, genome)
+        else:
+            self._update_paper_trades(symbol, df)
         prob = float(learner.predict_proba(X.iloc[[-1]])[0])
         direction = signal_direction(prob, float(genome["entry_threshold"]))
         acc = learner.recent_accuracy
@@ -151,6 +160,41 @@ class LiveBot:
                                    prob="", volume=pos.volume, sl_distance="", tp_distance="",
                                    model_version="", genome_version="", note=f"ticket {pos.ticket}")
 
+    def _update_paper_trades(self, symbol, df):
+        state = self.symbols[symbol]
+        bt = self.cfg["backtest"]
+        cost = bt["spread"] + bt["slippage"]
+        o, h, l, c = (df[k].to_numpy(float) for k in ("open", "high", "low", "close"))
+        still_open = []
+        for trade in state["paper_open"]:
+            if trade["signal_bar"] < df.index[0]:
+                self.log(f"{symbol}: dropped paper trade from {trade['signal_bar']} (older than loaded history)")
+                continue
+            start = df.index.searchsorted(trade["signal_bar"], side="right")  # entry at the next bar's open
+            d, hit = trade["direction"], None
+            if start < len(df):
+                entry = o[start]
+                sl, tp = entry - d * trade["sl_dist"], entry + d * trade["tp_dist"]
+                for i in range(start, len(df)):
+                    hit = check_exit(d, sl, tp, o[i], h[i], l[i], c[i], i - start + 1, trade["max_hold"])
+                    if hit is not None:
+                        break
+            if hit is None:
+                still_open.append(trade)
+                continue
+            exit_price, reason = hit
+            move = (exit_price - entry) * d - cost
+            r, pnl = move / trade["sl_dist"], move * trade["value_per_unit"]
+            self.paper_log.write(symbol=symbol, signal_bar=trade["signal_bar"], direction=d,
+                                 prob=trade["prob"], volume=trade["volume"], entry_time=df.index[start],
+                                 entry=entry, exit_time=df.index[i], exit=exit_price, reason=reason,
+                                 r=round(r, 3), pnl=round(pnl, 2))
+            self.journal.write(bar_time=df.index[i], symbol=symbol, action="paper_close", direction=d,
+                               prob=trade["prob"], volume=trade["volume"], sl_distance="", tp_distance="",
+                               model_version="", genome_version="", note=f"{reason} R={r:+.2f} ${pnl:+.2f}")
+            self.log(f"{symbol}: paper trade from {trade['signal_bar']} closed ({reason}) R={r:+.2f} ${pnl:+.2f}")
+        state["paper_open"] = still_open
+
     def _try_enter(self, symbol, df, feats, X, genome, learner, direction, prob):
         cfg, risk = self.cfg, self.cfg["risk"]
         entry_time = df.index[-1] + dt.timedelta(seconds=BAR_SECONDS[cfg["timeframe"]])
@@ -164,7 +208,8 @@ class LiveBot:
         allowed, reason = self.gate.check(symbol, entry_time, direction, prob, X.iloc[-1])
         if not allowed:
             return skip(reason)
-        if len(self.broker.positions(symbol)) >= risk["max_open_positions"]:
+        open_now = len(self.broker.positions(symbol)) if cfg["mode"] == "trade" else len(self.symbols[symbol]["paper_open"])
+        if open_now >= risk["max_open_positions"]:
             return skip("max open positions")
         if self.broker.spread_points(symbol) > risk["max_spread_points"]:
             return skip("spread too wide")
@@ -188,5 +233,10 @@ class LiveBot:
             action = "open"
         else:
             action = "signal_dry_run"
+            self.symbols[symbol]["paper_open"].append({
+                "signal_bar": df.index[-1], "direction": direction, "prob": round(prob, 4), "volume": volume,
+                "sl_dist": sl_dist, "tp_dist": tp_dist, "max_hold": int(genome["max_hold_bars"]),
+                "value_per_unit": volume * self.broker.value_per_price_unit(symbol),
+            })
         self.journal.write(action=action, volume=volume, sl_distance=sl_dist, tp_distance=tp_dist, note="", **base)
         self.log(f"{symbol}: {action} {'BUY' if direction > 0 else 'SELL'} {volume} lots")

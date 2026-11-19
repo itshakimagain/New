@@ -45,7 +45,9 @@ Add `--symbol GBPUSD` to any command for another symbol. Without MT5 (on Mac or 
 try everything except `fetch` and `run`: `python -m tradebot demo-data` writes synthetic prices.
 
 Every decision is written to `state/journal.csv`: the probability, the model and strategy versions,
-and why a trade was skipped. Backtest trades and equity curves are saved in `state/`.
+and why a trade was skipped. In `dry_run` mode each signal also becomes a pretend trade, followed bar
+by bar with the same stop, target and cost rules as the backtest. Finished ones go to
+`state/paper_trades.csv`, and `status` shows the running win rate and profit. Backtest trades and equity curves are saved in `state/`.
 
 ## Your input
 

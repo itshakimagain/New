@@ -153,6 +153,9 @@ class FakeBroker:
     def market_order(self, *args, **kwargs):
         self.orders.append(args)
 
+    def value_per_price_unit(self, symbol):
+        return 100.0
+
 
 def test_live_bot_learns_bar_by_bar(cfg, prices):
     cfg["mode"] = "trade"
@@ -226,11 +229,11 @@ def test_live_bot_survives_lost_connection(cfg, prices):
             super().__init__(df)
             self.failures = 0
 
-        def server_time(self, symbol):
+        def closed_bars(self, symbol, timeframe, count):
             if self.failures:
                 self.failures -= 1
                 raise AttributeError("'NoneType' object has no attribute 'time'")
-            return super().server_time(symbol)
+            return super().closed_bars(symbol, timeframe, count)
 
     broker = FlakyBroker(prices)
     logs = []
@@ -250,3 +253,38 @@ def test_reconnect_to_real_account_stops_trading(cfg, prices):
     broker.real = True
     with pytest.raises(BrokerError):
         bot._reconnect()
+
+
+def test_paper_trade_hits_take_profit(cfg):
+    idx = pd.date_range("2024-01-01", periods=4, freq="1h")
+    df = pd.DataFrame({"open": [99.0, 100.0, 101.0, 104.0], "high": [99.0, 102.0, 106.0, 104.0],
+                       "low": [99.0, 97.0, 100.0, 104.0], "close": [99.0, 101.0, 104.0, 104.0]}, index=idx)
+    cfg["backtest"].update(spread=0.2, slippage=0.0)
+    bot = LiveBot(cfg, FakeBroker(df), log=lambda *_: None)
+    bot.symbols["XAUUSD"] = {"paper_open": [{
+        "signal_bar": idx[0], "direction": 1, "prob": 0.8, "volume": 0.02,
+        "sl_dist": 4.0, "tp_dist": 5.0, "max_hold": 32, "value_per_unit": 2.0}]}
+    bot._update_paper_trades("XAUUSD", df.iloc[:2])
+    assert len(bot.symbols["XAUUSD"]["paper_open"]) == 1  # entered at 100, neither 96 nor 105 touched yet
+    bot._update_paper_trades("XAUUSD", df)
+    assert bot.symbols["XAUUSD"]["paper_open"] == []
+    trade = pd.read_csv(bot.paper_log.path).iloc[0]
+    assert trade["reason"] == "tp" and trade["entry"] == 100.0 and trade["exit"] == 105.0
+    assert trade["r"] == pytest.approx((5.0 - 0.2) / 4.0) and trade["pnl"] == pytest.approx(4.8 * 2.0)
+
+
+def test_dry_run_tracks_paper_trades(cfg, prices, capsys):
+    from tradebot.__main__ import _print_paper_summary
+    cfg["strategy"]["entry_threshold"] = 0.5
+    cfg["paths"]["custom_filters"] = None
+    broker = FakeBroker(prices)
+    bot = LiveBot(cfg, broker, log=lambda *_: None)
+    for _ in range(150):
+        bot.step("EURUSD")
+        assert len(bot.symbols["EURUSD"]["paper_open"]) <= cfg["risk"]["max_open_positions"]
+        broker.cursor += 1
+    assert broker.orders == []
+    closed = pd.read_csv(bot.paper_log.path)
+    assert len(closed) > 0 and set(closed["reason"]) <= {"tp", "sl", "gap_sl", "max_hold"}
+    _print_paper_summary(cfg, "EURUSD", len(bot.symbols["EURUSD"]["paper_open"]))
+    assert f"{len(closed)} closed" in capsys.readouterr().out

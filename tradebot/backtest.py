@@ -32,6 +32,20 @@ def walk_forward_probs(X, y, w, cfg, genome):
     return probs, learner
 
 
+def check_exit(direction, sl, tp, o, h, l, c, bars_held, max_hold):
+    """(exit price, reason) if an open trade ends on this bar, else None. bars_held is 1 on the entry bar."""
+    d = direction
+    if bars_held > 1 and d * (o - sl) <= 0:
+        return o, "gap_sl"  # opened beyond the stop
+    if (d > 0 and l <= sl) or (d < 0 and h >= sl):
+        return sl, "sl"  # stop first if both are touched in one bar (pessimistic)
+    if (d > 0 and h >= tp) or (d < 0 and l <= tp):
+        return tp, "tp"
+    if bars_held >= max_hold:
+        return c, "max_hold"
+    return None
+
+
 def simulate(df, X, probs, atr_series, genome, cfg, symbol, gate=None):
     bt, risk = cfg["backtest"], cfg["risk"]
     gate = gate or TradeGate(cfg)
@@ -52,22 +66,15 @@ def simulate(df, X, probs, atr_series, genome, cfg, symbol, gate=None):
     for i in range(n):
         if pos is not None:
             d = pos["dir"]
-            exit_price = None
-            if d * (o[i] - pos["sl"]) <= 0 and i > pos["entry_i"]:
-                exit_price = o[i]  # gapped through the stop
-            elif (d > 0 and l[i] <= pos["sl"]) or (d < 0 and h[i] >= pos["sl"]):
-                exit_price = pos["sl"]  # stop first if both touched in one bar (pessimistic)
-            elif (d > 0 and h[i] >= pos["tp"]) or (d < 0 and l[i] <= pos["tp"]):
-                exit_price = pos["tp"]
-            elif i - pos["entry_i"] + 1 >= max_hold:
-                exit_price = c[i]
-            if exit_price is not None:
+            hit = check_exit(d, pos["sl"], pos["tp"], o[i], h[i], l[i], c[i], i - pos["entry_i"] + 1, max_hold)
+            if hit is not None:
+                exit_price, reason = hit
                 pnl = ((exit_price - pos["entry"]) * d - cost) * pos["size"]
                 equity += pnl
                 trades.append({
                     "entry_time": times[pos["entry_i"]], "exit_time": times[i], "direction": d,
                     "entry": pos["entry"], "exit": exit_price, "prob": pos["prob"], "pnl": pnl,
-                    "r": pnl / pos["risk_money"],
+                    "r": pnl / pos["risk_money"], "reason": reason,
                 })
                 pos = None
         curve[i] = equity

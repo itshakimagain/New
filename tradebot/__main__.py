@@ -103,18 +103,35 @@ def cmd_hint(cfg, args):
     print(f"added hint to {path}")
 
 
+def _print_paper_summary(cfg, symbol, open_paper):
+    import pandas as pd
+    path = state_dir(cfg) / "paper_trades.csv"
+    trades = pd.read_csv(path) if path.exists() else pd.DataFrame(columns=["symbol", "r", "pnl"])
+    trades = trades[trades["symbol"] == symbol]
+    if not len(trades):
+        print(f"paper trades (dry run): none closed yet, {open_paper} open")
+        return
+    wins = int((trades["pnl"] > 0).sum())
+    print(f"paper trades (dry run): {len(trades)} closed, {wins} won ({wins / len(trades):.0%}), "
+          f"total {trades['r'].sum():+.2f} R / ${trades['pnl'].sum():+.2f}, "
+          f"average {trades['r'].mean():+.2f} R per trade, {open_paper} open")
+
+
 def cmd_status(cfg, args):
     print(f"mode: {cfg['mode']}  timeframe: {cfg['timeframe']}  symbols: {', '.join(cfg['symbols'])}")
     for symbol in cfg["symbols"]:
         print(f"\n{symbol} genome:")
         print(json.dumps(load_genome(cfg, symbol), indent=2))
         model = state_dir(cfg) / "models" / f"{symbol}.joblib"
+        open_paper = 0
         if model.exists():
             import joblib
-            learner = joblib.load(model)["learner"]
+            saved = joblib.load(model)
+            learner, open_paper = saved["learner"], len(saved.get("paper_open", []))
             acc = learner.recent_accuracy
             print(f"model v{learner.version}, recent accuracy {'n/a' if acc is None else f'{acc:.3f}'}, "
                   f"last retrains: {learner.events[-3:]}")
+        _print_paper_summary(cfg, symbol, open_paper)
     journal = state_dir(cfg) / "journal.csv"
     if journal.exists():
         print(f"\nlast journal entries ({journal}):")
